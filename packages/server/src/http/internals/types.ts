@@ -1,15 +1,14 @@
 import {
   AnyRouter,
-  Dict,
   ProcedureType,
-  ResponseMeta,
-  TRPCError,
   inferRouterContext,
   inferRouterError,
-} from '@trpc/server';
-import { URLSearchParams } from 'url';
-import { BaseHandlerOptions } from '../../internals/baseHandlerOptions';
+} from '../../core';
+import { TRPCError } from '../../error/TRPCError';
+import { BaseHandlerOptions } from '../../internals/types';
 import { TRPCResponse } from '../../rpc';
+import { Dict } from '../../types';
+import { ResponseMeta } from '../types';
 
 export type HTTPHeaders = Dict<string | string[]>;
 
@@ -26,6 +25,9 @@ export interface HTTPRequest {
   body: unknown;
 }
 
+/**
+ * @internal
+ */
 export type ResponseMetaFn<TRouter extends AnyRouter> = (opts: {
   data: TRPCResponse<unknown, inferRouterError<TRouter>>[];
   ctx?: inferRouterContext<TRouter>;

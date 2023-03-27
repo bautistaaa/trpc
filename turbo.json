@@ -1,0 +1,70 @@
+{
+  "$schema": "https://turborepo.org/schema.json",
+  "pipeline": {
+    "codegen:entrypoints": {
+      "outputs": [
+        "links/**",
+        "shared/**",
+        "ssg/**",
+        "adapters/**",
+        "http/**",
+        "observable/**",
+        "rpc/**",
+        "subscription/**"
+      ]
+    },
+    "codegen:bigBoi": {
+      "outputs": ["server/__generated__/bigBoi/**"]
+    },
+    "codegen:bigLegacyRouter": {
+      "outputs": ["server/__generated__/bigLegacyRouter/**"]
+    },
+    "prebuild": {
+      "cache": false
+    },
+    "build": {
+      "dependsOn": ["^build", "codegen:entrypoints", "prebuild"],
+      "outputs": [".next/**", "dist/**", "build/**", "docs/typedoc/**"]
+    },
+    "@examples/minimal-react#build": {
+      "outputs": ["client/dist/**", "server/dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "cache": true
+    },
+    "lint-fix": {
+      "cache": false
+    },
+    "test": {
+      "dependsOn": ["^build", "codegen:bigBoi", "codegen:bigLegacyRouter"],
+      "cache": false
+    },
+    "test-ci": {
+      "dependsOn": ["^build", "codegen:bigBoi", "codegen:bigLegacyRouter"],
+      "cache": false
+    },
+    "test-dev": {
+      "dependsOn": ["^build"],
+      "cache": false
+    },
+    "test-start": {
+      "dependsOn": ["^build", "build"],
+      "cache": false
+    },
+    "test-watch": {
+      "cache": false,
+      "persistent": true
+    },
+    "type-check": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "cache": true
+    }
+  }
+}

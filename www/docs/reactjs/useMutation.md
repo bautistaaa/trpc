@@ -1,11 +1,13 @@
 ---
-id: mutations
+id: useMutation
 title: useMutation()
 sidebar_label: useMutation()
-slug: /react-mutations
+slug: /reactjs/usemutation
 ---
 
-> The hooks provided by `@trpc/react` are a thin wrapper around React Query. For in-depth information about options and usage patterns, refer to their docs on [Mutations](https://react-query.tanstack.com/guides/mutations).
+:::note
+The hooks provided by `@trpc/react-query` are a thin wrapper around @tanstack/react-query. For in-depth information about options and usage patterns, refer to their docs on [mutations](https://react-query.tanstack.com/guides/mutations).
+:::
 
 Works like react-query's mutations - [see their docs](https://react-query.tanstack.com/guides/mutations).
 
@@ -14,29 +16,31 @@ Works like react-query's mutations - [see their docs](https://react-query.tansta
 <details><summary>Backend code</summary>
 
 ```tsx title='server/routers/_app.ts'
-import * as trpc from '@trpc/server';
+import { initTRPC } from '@trpc/server';
 import { z } from 'zod';
 
-export const appRouter = trpc.router()
+export const t = initTRPC.create();
+
+export const appRouter = t.router({
   // Create procedure at path 'login'
   // The syntax is identical to creating queries
-  .mutation('login', {
+  login: t.procedure
     // using zod schema to validate and infer input values
-    input: z
-      .object({
+    .input(
+      z.object({
         name: z.string(),
-      })
-    async resolve({ input }) {
+      }),
+    )
+    .mutation(({ input }) => {
       // Here some login stuff would happen
-
       return {
         user: {
           name: input.name,
-          role: 'ADMIN'
+          role: 'ADMIN',
         },
       };
-    },
-  })
+    }),
+});
 ```
 
 </details>
@@ -46,9 +50,9 @@ import { trpc } from '../utils/trpc';
 
 export function MyComponent() {
   // This can either be a tuple ['login'] or string 'login'
-  const mutation = trpc.useMutation(['login']);
+  const mutation = trpc.login.useMutation();
 
-  const handleLogin = async () => {
+  const handleLogin = () => {
     const name = 'John Doe';
 
     mutation.mutate({ name });
@@ -57,7 +61,9 @@ export function MyComponent() {
   return (
     <div>
       <h1>Login Form</h1>
-      <button onClick={handleLogin} disabled={mutation.isLoading}>Login</button>
+      <button onClick={handleLogin} disabled={mutation.isLoading}>
+        Login
+      </button>
 
       {mutation.error && <p>Something went wrong! {mutation.error.message}</p>}
     </div>

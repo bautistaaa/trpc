@@ -1,9 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import http from 'http';
-import url from 'url';
-import { AnyRouter } from '../router';
+import { AnyRouter } from '../core';
 import {
   NodeHTTPCreateContextFnOptions,
   NodeHTTPHandlerOptions,
@@ -22,12 +19,20 @@ export function createHTTPHandler<TRouter extends AnyRouter>(
   opts: CreateHTTPHandlerOptions<TRouter>,
 ) {
   return async (req: http.IncomingMessage, res: http.ServerResponse) => {
-    const endpoint = url.parse(req.url!).pathname!.slice(1);
+    // if no hostname, set a dummy one
+    const href = req.url!.startsWith('/')
+      ? `http://127.0.0.1${req.url}`
+      : req.url!;
+
+    // get procedure path and remove the leading slash
+    // /procedure -> procedure
+    const path = new URL(href).pathname.slice(1);
+
     await nodeHTTPRequestHandler({
       ...opts,
       req,
       res,
-      path: endpoint,
+      path,
     });
   };
 }
@@ -40,7 +45,7 @@ export function createHTTPServer<TRouter extends AnyRouter>(
 
   return {
     server,
-    listen(port?: number) {
+    listen: (port?: number) => {
       server.listen(port);
       const actualPort =
         port === 0 ? ((server.address() as any).port as number) : port;

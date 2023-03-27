@@ -3,31 +3,36 @@
  * https://github.com/FormidableLabs/urql/blob/main/packages/next-urql/src/with-urql-client.ts
  */
 import {
-  CreateTRPCClientOptions,
+  DehydratedState,
+  Hydrate,
+  QueryClient,
+  QueryClientProvider,
+  dehydrate,
+} from '@tanstack/react-query';
+import type { CreateTRPCClientOptions } from '@trpc/client';
+import {
   TRPCClient,
   TRPCClientError,
   TRPCClientErrorLike,
   createReactQueryHooks,
   createTRPCClient,
-} from '@trpc/react';
-import type { AnyRouter, Dict, Maybe, ResponseMeta } from '@trpc/server';
+} from '@trpc/react-query';
+import {
+  CreateTRPCReactOptions,
+  CreateTRPCReactQueryClientConfig,
+  getQueryClient,
+} from '@trpc/react-query/shared';
+import type { AnyRouter, Dict, Maybe } from '@trpc/server';
+import type { ResponseMeta } from '@trpc/server/http';
 import {
   AppContextType,
   AppPropsType,
   NextComponentType,
   NextPageContext,
 } from 'next/dist/shared/lib/utils';
+import { NextRouter } from 'next/router';
 import React, { createElement, useState } from 'react';
-import {
-  DehydratedState,
-  Hydrate,
-  QueryClient,
-  QueryClientProvider,
-  dehydrate,
-} from 'react-query';
 import ssrPrepass from 'react-ssr-prepass';
-
-type QueryClientConfig = ConstructorParameters<typeof QueryClient>[0];
 
 function transformQueryOrMutationCacheErrors<
   TState extends
@@ -53,25 +58,31 @@ function transformQueryOrMutationCacheErrors<
 }
 export type WithTRPCConfig<TRouter extends AnyRouter> =
   CreateTRPCClientOptions<TRouter> & {
-    queryClientConfig?: QueryClientConfig;
-  };
+    abortOnUnmount?: boolean;
+  } & CreateTRPCReactQueryClientConfig;
 
-export function withTRPC<TRouter extends AnyRouter>(
-  opts: {
-    config: (info: { ctx?: NextPageContext }) => WithTRPCConfig<TRouter>;
-  } & (
-    | {
-        ssr?: false;
-      }
-    | {
-        ssr: true;
-        responseMeta?: (opts: {
-          ctx: NextPageContext;
-          clientErrors: TRPCClientError<TRouter>[];
-        }) => ResponseMeta;
-      }
-  ),
-) {
+interface WithTRPCOptions<TRouter extends AnyRouter>
+  extends CreateTRPCReactOptions<TRouter> {
+  config: (info: { ctx?: NextPageContext }) => WithTRPCConfig<TRouter>;
+}
+
+export interface WithTRPCSSROptions<TRouter extends AnyRouter>
+  extends WithTRPCOptions<TRouter> {
+  ssr: true;
+  responseMeta?: (opts: {
+    ctx: NextPageContext;
+    clientErrors: TRPCClientError<TRouter>[];
+  }) => ResponseMeta;
+}
+export interface WithTRPCNoSSROptions<TRouter extends AnyRouter>
+  extends WithTRPCOptions<TRouter> {
+  ssr?: false;
+}
+
+export function withTRPC<
+  TRouter extends AnyRouter,
+  TSSRContext extends NextPageContext = NextPageContext,
+>(opts: WithTRPCNoSSROptions<TRouter> | WithTRPCSSROptions<TRouter>) {
   const { config: getClientConfig } = opts;
 
   type TRPCPrepassProps = {
@@ -79,40 +90,49 @@ export function withTRPC<TRouter extends AnyRouter>(
     queryClient: QueryClient;
     trpcClient: TRPCClient<TRouter>;
     ssrState: 'prepass';
-    ssrContext: NextPageContext;
+    ssrContext: TSSRContext;
   };
   return (AppOrPage: NextComponentType<any, any, any>): NextComponentType => {
-    const trpc = createReactQueryHooks<TRouter, NextPageContext>();
+    const trpc = createReactQueryHooks<TRouter, TSSRContext>({
+      unstable_overrides: opts.unstable_overrides,
+    });
 
     const WithTRPC = (
-      props: AppPropsType & {
+      props: AppPropsType<NextRouter, any> & {
         trpc?: TRPCPrepassProps;
       },
     ) => {
-      const [{ queryClient, trpcClient, ssrState, ssrContext }] = useState(
-        () => {
-          if (props.trpc) {
-            return props.trpc;
-          }
-          const config = getClientConfig({});
-          const queryClient = new QueryClient(config.queryClientConfig);
-          const trpcClient = trpc.createClient(config);
-          return {
-            queryClient,
-            trpcClient,
-            ssrState: opts.ssr ? ('mounting' as const) : (false as const),
-            ssrContext: null,
-          };
-        },
-      );
+      const [prepassProps] = useState(() => {
+        if (props.trpc) {
+          return props.trpc;
+        }
 
-      const hydratedState = trpc.useDehydratedState(
-        trpcClient,
-        props.pageProps?.trpcState,
-      );
+        const config = getClientConfig({});
+        const queryClient = getQueryClient(config);
+        const trpcClient = trpc.createClient(config);
+        return {
+          abortOnUnmount: config.abortOnUnmount,
+          queryClient,
+          trpcClient,
+          ssrState: opts.ssr ? ('mounting' as const) : (false as const),
+          ssrContext: null,
+        };
+      });
+
+      const { queryClient, trpcClient, ssrState, ssrContext } = prepassProps;
+
+      // allow normal components to be wrapped, not just app/pages
+      let hydratedState: DehydratedState | undefined;
+      if (props.pageProps) {
+        hydratedState = trpc.useDehydratedState(
+          trpcClient,
+          props.pageProps.trpcState,
+        );
+      }
 
       return (
         <trpc.Provider
+          abortOnUnmount={(prepassProps as any).abortOnUnmount ?? false}
           client={trpcClient}
           queryClient={queryClient}
           ssrState={ssrState}
@@ -158,16 +178,17 @@ export function withTRPC<TRouter extends AnyRouter>(
         if (typeof window !== 'undefined' || !opts.ssr) {
           return getAppTreeProps(pageProps);
         }
+
         const config = getClientConfig({ ctx });
         const trpcClient = createTRPCClient(config);
-        const queryClient = new QueryClient(config.queryClientConfig);
+        const queryClient = getQueryClient(config);
 
         const trpcProp: TRPCPrepassProps = {
           config,
           trpcClient,
           queryClient,
           ssrState: 'prepass',
-          ssrContext: ctx,
+          ssrContext: ctx as TSSRContext,
         };
         const prepassProps = {
           pageProps,
@@ -210,6 +231,7 @@ export function withTRPC<TRouter extends AnyRouter>(
             transformQueryOrMutationCacheErrors,
           ),
         };
+
         // dehydrate query client's state and add it to the props
         pageProps.trpcState = trpcClient.runtime.transformer.serialize(
           dehydratedCacheWithErrors,

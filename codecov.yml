@@ -1,6 +1,8 @@
 # configuration related to pull request comments
-comment: no # do not comment PR with the result
+comment: false # do not comment PR with the result
 
+ignore:
+  - '**/deprecated/**'
 coverage:
   range: 50..90 # coverage lower than 50 is red, higher than 90 green, between color code
 
@@ -11,4 +13,4 @@ coverage:
         threshold: 1% # allow for 1% reduction of coverage without failing
 
     # do not run coverage on patch nor changes
-    patch: false
+    patch: off

@@ -5,16 +5,18 @@ import type {
   APIGatewayProxyResult,
   APIGatewayProxyStructuredResultV2,
 } from 'aws-lambda';
-import type { ResponseMetaFn } from '../../http/internals/types';
-import type { AnyRouter, inferRouterContext } from '../../router';
+import type { AnyRouter, inferRouterContext } from '../../core';
+import { TRPCError } from '../../error/TRPCError';
+import type { HTTPHeaders, ResponseMetaFn } from '../../http/internals/types';
+import { OnErrorFunction } from '../../internals/types';
 
 export type APIGatewayEvent = APIGatewayProxyEvent | APIGatewayProxyEventV2;
 export type APIGatewayResult =
   | APIGatewayProxyResult
   | APIGatewayProxyStructuredResultV2;
 
-export type CreateAWSLambdaContextOptions<T extends APIGatewayEvent> = {
-  event: T;
+export type CreateAWSLambdaContextOptions<TEvent extends APIGatewayEvent> = {
+  event: TEvent;
   context: APIGWContext;
 };
 export type AWSLambdaCreateContextFn<
@@ -36,7 +38,7 @@ export type AWSLambdaOptions<
       batching?: {
         enabled: boolean;
       };
-      onError?: (options: Record<string, unknown>) => void;
+      onError?: OnErrorFunction<TRouter, TEvent>;
       responseMeta?: ResponseMetaFn<TRouter>;
     } & (
       | {
@@ -81,6 +83,67 @@ function determinePayloadFormat(
     }
   }
 }
+
+export function getHTTPMethod(event: APIGatewayEvent) {
+  if (isPayloadV1(event)) {
+    return event.httpMethod;
+  }
+  if (isPayloadV2(event)) {
+    return event.requestContext.http.method;
+  }
+  throw new TRPCError({
+    code: 'INTERNAL_SERVER_ERROR',
+    message: UNKNOWN_PAYLOAD_FORMAT_VERSION_ERROR_MESSAGE,
+  });
+}
+
+export function getPath(event: APIGatewayEvent) {
+  if (isPayloadV1(event)) {
+    if (!event.pathParameters) {
+      // Then this event was not triggered by a resource denoted with {proxy+}
+      return event.path.split('/').pop() || '';
+    }
+    const matches = event.resource.matchAll(/\{(.*?)\}/g);
+    for (const match of matches) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const group = match[1]!;
+      if (group.includes('+') && event.pathParameters) {
+        return event.pathParameters[group.replace('+', '')] || '';
+      }
+    }
+    return event.path.slice(1);
+  }
+  if (isPayloadV2(event)) {
+    const matches = event.routeKey.matchAll(/\{(.*?)\}/g);
+    for (const match of matches) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const group = match[1]!;
+      if (group.includes('+') && event.pathParameters) {
+        return event.pathParameters[group.replace('+', '')] || '';
+      }
+    }
+    return event.rawPath.slice(1);
+  }
+  throw new TRPCError({
+    code: 'INTERNAL_SERVER_ERROR',
+    message: UNKNOWN_PAYLOAD_FORMAT_VERSION_ERROR_MESSAGE,
+  });
+}
+
+export function transformHeaders(
+  headers: HTTPHeaders,
+): APIGatewayResult['headers'] {
+  const obj: APIGatewayResult['headers'] = {};
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === 'undefined') {
+      continue;
+    }
+    obj[key] = Array.isArray(value) ? value.join(',') : value;
+  }
+  return obj;
+}
+
 export type DefinedAPIGatewayPayloadFormats = '1.0' | '2.0';
 export type APIGatewayPayloadFormatVersion =
   | DefinedAPIGatewayPayloadFormats

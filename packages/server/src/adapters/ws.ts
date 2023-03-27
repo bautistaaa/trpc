@@ -1,34 +1,41 @@
-import http from 'http';
+import { IncomingMessage } from 'http';
 import ws from 'ws';
-import { TRPCError } from '../TRPCError';
-import { BaseHandlerOptions } from '../internals/baseHandlerOptions';
-import { callProcedure } from '../internals/callProcedure';
-import { getErrorFromUnknown } from '../internals/errors';
-import { transformTRPCResponse } from '../internals/transformTRPCResponse';
-import { AnyRouter, ProcedureType, inferRouterContext } from '../router';
 import {
-  TRPCErrorResponse,
+  AnyRouter,
+  ProcedureType,
+  callProcedure,
+  inferRouterContext,
+} from '../core';
+import { TRPCError, getTRPCErrorFromUnknown } from '../error/TRPCError';
+import { getCauseFromUnknown } from '../error/utils';
+import { transformTRPCResponse } from '../internals/transformTRPCResponse';
+import { BaseHandlerOptions } from '../internals/types';
+import { Unsubscribable, isObservable } from '../observable';
+import {
+  JSONRPC2,
+  TRPCClientOutgoingMessage,
   TRPCReconnectNotification,
-  TRPCRequest,
-  TRPCResponse,
+  TRPCResponseMessage,
 } from '../rpc';
-import { Subscription } from '../subscription';
 import { CombinedDataTransformer } from '../transformer';
-import { NodeHTTPCreateContextOption } from './node-http';
+import {
+  NodeHTTPCreateContextFnOptions,
+  NodeHTTPCreateContextOption,
+} from './node-http';
 
-/* istanbul ignore next */
+/* istanbul ignore next -- @preserve */
 function assertIsObject(obj: unknown): asserts obj is Record<string, unknown> {
   if (typeof obj !== 'object' || Array.isArray(obj) || !obj) {
     throw new Error('Not an object');
   }
 }
-/* istanbul ignore next */
+/* istanbul ignore next -- @preserve */
 function assertIsProcedureType(obj: unknown): asserts obj is ProcedureType {
   if (obj !== 'query' && obj !== 'subscription' && obj !== 'mutation') {
     throw new Error('Invalid procedure type');
   }
 }
-/* istanbul ignore next */
+/* istanbul ignore next -- @preserve */
 function assertIsRequestId(
   obj: unknown,
 ): asserts obj is number | string | null {
@@ -41,13 +48,13 @@ function assertIsRequestId(
     throw new Error('Invalid request id');
   }
 }
-/* istanbul ignore next */
+/* istanbul ignore next -- @preserve */
 function assertIsString(obj: unknown): asserts obj is string {
   if (typeof obj !== 'string') {
     throw new Error('Invalid string');
   }
 }
-/* istanbul ignore next */
+/* istanbul ignore next -- @preserve */
 function assertIsJSONRPC2OrUndefined(
   obj: unknown,
 ): asserts obj is '2.0' | undefined {
@@ -58,7 +65,7 @@ function assertIsJSONRPC2OrUndefined(
 function parseMessage(
   obj: unknown,
   transformer: CombinedDataTransformer,
-): TRPCRequest {
+): TRPCClientOutgoingMessage {
   assertIsObject(obj);
   const { method, params, id, jsonrpc } = obj;
   assertIsRequestId(id);
@@ -66,8 +73,8 @@ function parseMessage(
   if (method === 'subscription.stop') {
     return {
       id,
+      jsonrpc,
       method,
-      params: undefined,
     };
   }
   assertIsProcedureType(method);
@@ -76,7 +83,15 @@ function parseMessage(
   const { input: rawInput, path } = params;
   assertIsString(path);
   const input = transformer.input.deserialize(rawInput);
-  return { jsonrpc, id, method, params: { input, path } };
+  return {
+    id,
+    jsonrpc,
+    method,
+    params: {
+      input,
+      path,
+    },
+  };
 }
 
 /**
@@ -84,35 +99,53 @@ function parseMessage(
  */
 export type WSSHandlerOptions<TRouter extends AnyRouter> = BaseHandlerOptions<
   TRouter,
-  http.IncomingMessage
+  IncomingMessage
 > & {
   wss: ws.Server;
   process?: NodeJS.Process;
-} & NodeHTTPCreateContextOption<TRouter, http.IncomingMessage, ws>;
+} & NodeHTTPCreateContextOption<TRouter, IncomingMessage, ws>;
+
+export type CreateWSSContextFnOptions = NodeHTTPCreateContextFnOptions<
+  IncomingMessage,
+  ws
+>;
 
 export function applyWSSHandler<TRouter extends AnyRouter>(
   opts: WSSHandlerOptions<TRouter>,
 ) {
   const { wss, createContext, router } = opts;
 
-  const { transformer } = router._def;
+  const { transformer } = router._def._config;
   wss.on('connection', async (client, req) => {
-    const clientSubscriptions = new Map<
-      number | string,
-      Subscription<TRouter>
-    >();
+    const clientSubscriptions = new Map<number | string, Unsubscribable>();
 
-    function respond(untransformedJSON: TRPCResponse) {
+    function respond(untransformedJSON: TRPCResponseMessage) {
       client.send(
         JSON.stringify(transformTRPCResponse(router, untransformedJSON)),
       );
     }
+
+    function stopSubscription(
+      subscription: Unsubscribable,
+      { id, jsonrpc }: { id: JSONRPC2.RequestId } & JSONRPC2.BaseEnvelope,
+    ) {
+      subscription.unsubscribe();
+
+      respond({
+        id,
+        jsonrpc,
+        result: {
+          type: 'stopped',
+        },
+      });
+    }
+
     const ctxPromise = createContext?.({ req, res: client });
     let ctx: inferRouterContext<TRouter> | undefined = undefined;
 
-    async function handleRequest(msg: TRPCRequest) {
-      const { id } = msg;
-      /* istanbul ignore next */
+    async function handleRequest(msg: TRPCClientOutgoingMessage) {
+      const { id, jsonrpc } = msg;
+      /* istanbul ignore next -- @preserve */
       if (id === null) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -122,7 +155,7 @@ export function applyWSSHandler<TRouter extends AnyRouter>(
       if (msg.method === 'subscription.stop') {
         const sub = clientSubscriptions.get(id);
         if (sub) {
-          sub.destroy();
+          stopSubscription(sub, { id, jsonrpc });
         }
         clientSubscriptions.delete(id);
         return;
@@ -131,17 +164,27 @@ export function applyWSSHandler<TRouter extends AnyRouter>(
       const type = msg.method;
       try {
         await ctxPromise; // asserts context has been set
+
         const result = await callProcedure({
+          procedures: router._def.procedures,
           path,
-          input,
-          type,
-          router,
+          rawInput: input,
           ctx,
+          type,
         });
 
-        if (!(result instanceof Subscription)) {
+        if (type === 'subscription') {
+          if (!isObservable(result)) {
+            throw new TRPCError({
+              message: `Subscription ${path} did not return an observable`,
+              code: 'INTERNAL_SERVER_ERROR',
+            });
+          }
+        } else {
+          // send the value as data if the method is not a subscription
           respond({
             id,
+            jsonrpc,
             result: {
               type: 'data',
               data: result,
@@ -150,75 +193,84 @@ export function applyWSSHandler<TRouter extends AnyRouter>(
           return;
         }
 
-        const sub = result;
-        /* istanbul ignore next */
+        const observable = result;
+        const sub = observable.subscribe({
+          next(data) {
+            respond({
+              id,
+              jsonrpc,
+              result: {
+                type: 'data',
+                data,
+              },
+            });
+          },
+          error(err) {
+            const error = getTRPCErrorFromUnknown(err);
+            opts.onError?.({ error, path, type, ctx, req, input });
+            respond({
+              id,
+              jsonrpc,
+              error: router.getErrorShape({
+                error,
+                type,
+                path,
+                input,
+                ctx,
+              }),
+            });
+          },
+          complete() {
+            respond({
+              id,
+              jsonrpc,
+              result: {
+                type: 'stopped',
+              },
+            });
+          },
+        });
+        /* istanbul ignore next -- @preserve */
         if (client.readyState !== client.OPEN) {
           // if the client got disconnected whilst initializing the subscription
-          sub.destroy();
+          // no need to send stopped message if the client is disconnected
+          sub.unsubscribe();
           return;
         }
-        /* istanbul ignore next */
+
+        /* istanbul ignore next -- @preserve */
         if (clientSubscriptions.has(id)) {
           // duplicate request ids for client
-          sub.destroy();
+          stopSubscription(sub, { id, jsonrpc });
           throw new TRPCError({
             message: `Duplicate id ${id}`,
             code: 'BAD_REQUEST',
           });
         }
         clientSubscriptions.set(id, sub);
-        sub.on('data', (data: unknown) => {
-          respond({
-            id,
-            result: {
-              type: 'data',
-              data,
-            },
-          });
-        });
-        sub.on('error', (_error: unknown) => {
-          const error = getErrorFromUnknown(_error);
-          const json: TRPCErrorResponse = {
-            id,
-            error: router.getErrorShape({
-              error,
-              type,
-              path,
-              input,
-              ctx,
-            }),
-          };
-          opts.onError?.({ error, path, type, ctx, req, input });
-          respond(json);
-        });
-        sub.on('destroy', () => {
-          respond({
-            id,
-            result: {
-              type: 'stopped',
-            },
-          });
-        });
 
         respond({
           id,
+          jsonrpc,
           result: {
             type: 'started',
           },
         });
-        await sub.start();
-      } catch (cause) /* istanbul ignore next */ {
+      } catch (cause) /* istanbul ignore next -- @preserve */ {
         // procedure threw an error
-        const error = getErrorFromUnknown(cause);
-        const json = router.getErrorShape({
-          error,
-          type,
-          path,
-          input,
-          ctx,
-        });
+        const error = getTRPCErrorFromUnknown(cause);
         opts.onError?.({ error, path, type, ctx, req, input });
-        respond({ id, error: json });
+        respond({
+          id,
+          jsonrpc,
+          error: router.getErrorShape({
+            error,
+            type,
+            path,
+            input,
+            ctx,
+          }),
+        });
       }
     }
     client.on('message', async (message) => {
@@ -232,7 +284,7 @@ export function applyWSSHandler<TRouter extends AnyRouter>(
       } catch (cause) {
         const error = new TRPCError({
           code: 'PARSE_ERROR',
-          cause,
+          cause: getCauseFromUnknown(cause),
         });
 
         respond({
@@ -248,9 +300,24 @@ export function applyWSSHandler<TRouter extends AnyRouter>(
       }
     });
 
+    // WebSocket errors should be handled, as otherwise unhandled exceptions will crash Node.js.
+    // This line was introduced after the following error brought down production systems:
+    // "RangeError: Invalid WebSocket frame: RSV2 and RSV3 must be clear"
+    // Here is the relevant discussion: https://github.com/websockets/ws/issues/1354#issuecomment-774616962
+    client.on('error', (cause) => {
+      opts.onError?.({
+        ctx,
+        error: getTRPCErrorFromUnknown(cause),
+        input: undefined,
+        path: undefined,
+        type: 'unknown',
+        req,
+      });
+    });
+
     client.once('close', () => {
       for (const sub of clientSubscriptions.values()) {
-        sub.destroy();
+        sub.unsubscribe();
       }
       clientSubscriptions.clear();
     });
@@ -258,17 +325,7 @@ export function applyWSSHandler<TRouter extends AnyRouter>(
       try {
         ctx = await ctxPromise;
       } catch (cause) {
-        const error = getErrorFromUnknown(cause);
-        const json: TRPCErrorResponse = {
-          id: null,
-          error: router.getErrorShape({
-            error,
-            type: 'unknown',
-            path: undefined,
-            input: undefined,
-            ctx,
-          }),
-        };
+        const error = getTRPCErrorFromUnknown(cause);
         opts.onError?.({
           error,
           path: undefined,
@@ -277,7 +334,16 @@ export function applyWSSHandler<TRouter extends AnyRouter>(
           req,
           input: undefined,
         });
-        respond(json);
+        respond({
+          id: null,
+          error: router.getErrorShape({
+            error,
+            type: 'unknown',
+            path: undefined,
+            input: undefined,
+            ctx,
+          }),
+        });
 
         // close in next tick
         (global.setImmediate ?? global.setTimeout)(() => {

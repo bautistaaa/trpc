@@ -1,51 +1,75 @@
 name: Examples E2E (old nodes)
-on: [push]
+
+on:
+  pull_request:
+
 jobs:
   e2e-old-nodes:
-    container:
-      image: mcr.microsoft.com/playwright:v1.20.0-focal
-      options: --user 1001
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
     env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright
-      DATABASE_URL: postgresql://postgres:@postgres:5432/trpcdb
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       matrix:
-        dir: [next-prisma-starter]
+        dir: [.interop/next-prisma-starter]
         # start example with:
-        node-start: ['12.x', '14.x']
+        node-start: ['14.x', '16.x']
         os: [ubuntu-latest]
-    services:
-      postgres:
-        image: postgres:12.1
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_DB: trpcdb
-        ports:
-          - 5432:5432
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@v3
+
+      - uses: pnpm/action-setup@v2.2.4
+
+      - uses: actions/setup-node@v3
         with:
-          node-version: 16.x
+          node-version: 18.x
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: |
+          echo "pnpm_cache_dir=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - uses: actions/cache@v3
+        name: Setup pnpm cache
+        with:
+          path: ${{ steps.pnpm-cache.outputs.pnpm_cache_dir }}
+          key: ${{ runner.os }}-pnpm-store-${{ matrix.dir }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-${{ matrix.dir }}-
+
       - run: node -v
-      - uses: bahmutov/npm-install@v1
+      - name: Install deps (with cache)
+        run: pnpm --filter ./examples/${{ matrix.dir }}  --filter "@trpc/*" --filter "!@trpc/tests" --filter root install
 
-      - name: Next.js cache
-        uses: actions/cache@v2
-        with:
-          path: ${{ github.workspace }}${{ matrix.dir }}/.next/cache
-          key: ${{ matrix.dir }}-${{ runner.os }}-${{ matrix.node-start }}-${{ hashFiles('**/yarn.lock') }}-nextjs
+      - name: Install playwright???
+        run: |
+          cat ./examples/${{ matrix.dir }}/package.json | 
+          if grep --silent '"@playwright/test"';
+            then pnpm playwright install chromium;
+          fi
 
-      - uses: actions/setup-node@v2
+      - name: Build trpc
+        run: pnpm turbo --filter "@trpc/*" build
+
+      - uses: actions/setup-node@v3
         with:
           node-version: ${{ matrix.node-start }}
 
       - run: node -v
 
-      - name: if exists, run yarn lint
-        run: cd examples/${{ matrix.dir }} && cat package.json | if grep --silent '"lint"'; then yarn lint; fi
-      - run: yarn --cwd examples/${{ matrix.dir }} build
-      - run: yarn --cwd examples/${{ matrix.dir }} test-start
-      - run: yarn --cwd examples/${{ matrix.dir }} test-dev
+      # Run test-dev & test-start separately so ports don't clash
+      - name: Run build
+        run: pnpm turbo --filter ./examples/${{ matrix.dir }} build
+      - name: Run test-dev
+        run: pnpm turbo --filter ./examples/${{ matrix.dir }} test-dev
+      - name: Run test-start
+        run: pnpm turbo --filter ./examples/${{ matrix.dir }} test-start

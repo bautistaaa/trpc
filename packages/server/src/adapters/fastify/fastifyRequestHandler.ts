@@ -1,15 +1,11 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { URLSearchParams } from 'url';
-import { assertNotBrowser } from '../../assertNotBrowser';
+import { AnyRouter, inferRouterContext } from '../../core';
 import {
   HTTPBaseHandlerOptions,
   HTTPRequest,
 } from '../../http/internals/types';
 import { resolveHTTPResponse } from '../../http/resolveHTTPResponse';
-import { AnyRouter, inferRouterContext } from '../../router';
 import { NodeHTTPCreateContextOption } from '../node-http';
-
-assertNotBrowser();
 
 export type FastifyHandlerOptions<
   TRouter extends AnyRouter,
@@ -68,6 +64,7 @@ export async function fastifyRequestHandler<
     res.statusCode = result.status;
   }
   for (const [key, value] of Object.entries(result.headers ?? {})) {
+    /* istanbul ignore if -- @preserve */
     if (typeof value === 'undefined') {
       continue;
     }

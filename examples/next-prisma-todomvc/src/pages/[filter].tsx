@@ -1,4 +1,7 @@
-import { createSSGHelpers } from '@trpc/react/ssg';
+import { useIsMutating } from '@tanstack/react-query';
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+import { createProxySSGHelpers } from '@trpc/react-query/ssg';
+import { inferProcedureOutput } from '@trpc/server';
 import clsx from 'clsx';
 import {
   GetStaticPaths,
@@ -8,14 +11,14 @@ import {
 import Head from 'next/head';
 import Link from 'next/link';
 import { RefObject, useEffect, useRef, useState } from 'react';
-import { useIsMutating } from 'react-query';
-import { ReactQueryDevtools } from 'react-query/devtools';
+import superjson from 'superjson';
 import 'todomvc-app-css/index.css';
 import 'todomvc-common/base.css';
-import { inferQueryOutput, transformer, trpc } from '../utils/trpc';
-import { appRouter, createContext } from './api/trpc/[trpc]';
+import { createContext } from '../server/context';
+import { AppRouter, appRouter } from '../server/routers/_app';
+import { trpc } from '../utils/trpc';
 
-type Task = inferQueryOutput<'todo.all'>[number];
+type Task = inferProcedureOutput<AppRouter['todo']['all']>[number];
 
 /**
  * Hook for checking when the user clicks outside the passed ref
@@ -66,15 +69,15 @@ function ListItem({ task }: { task: Task }) {
     setCompleted(task.completed);
   }, [task.completed]);
 
-  const editTask = trpc.useMutation('todo.edit', {
+  const editTask = trpc.todo.edit.useMutation({
     async onMutate({ id, data }) {
-      await utils.cancelQuery(['todo.all']);
-      const allTasks = utils.getQueryData(['todo.all']);
+      await utils.todo.all.cancel();
+      const allTasks = utils.todo.all.getData();
       if (!allTasks) {
         return;
       }
-      utils.setQueryData(
-        ['todo.all'],
+      utils.todo.all.setData(
+        undefined,
         allTasks.map((t) =>
           t.id === id
             ? {
@@ -86,15 +89,15 @@ function ListItem({ task }: { task: Task }) {
       );
     },
   });
-  const deleteTask = trpc.useMutation('todo.delete', {
+  const deleteTask = trpc.todo.delete.useMutation({
     async onMutate() {
-      await utils.cancelQuery(['todo.all']);
-      const allTasks = utils.getQueryData(['todo.all']);
+      await utils.todo.all.cancel();
+      const allTasks = utils.todo.all.getData();
       if (!allTasks) {
         return;
       }
-      utils.setQueryData(
-        ['todo.all'],
+      utils.todo.all.setData(
+        undefined,
         allTasks.filter((t) => t.id != task.id),
       );
     },
@@ -172,35 +175,32 @@ function ListItem({ task }: { task: Task }) {
 export default function TodosPage({
   filter,
 }: InferGetStaticPropsType<typeof getStaticProps>) {
-  const allTasks = trpc.useQuery(['todo.all'], {
+  const allTasks = trpc.todo.all.useQuery(undefined, {
     staleTime: 3000,
   });
   const utils = trpc.useContext();
-  const addTask = trpc.useMutation('todo.add', {
+  const addTask = trpc.todo.add.useMutation({
     async onMutate({ text }) {
-      await utils.cancelQuery(['todo.all']);
+      await utils.todo.all.cancel();
       const tasks = allTasks.data ?? [];
-      utils.setQueryData(
-        ['todo.all'],
-        [
-          ...tasks,
-          {
-            id: `${Math.random()}`,
-            completed: false,
-            text,
-            createdAt: new Date(),
-          },
-        ],
-      );
+      utils.todo.all.setData(undefined, [
+        ...tasks,
+        {
+          id: `${Math.random()}`,
+          completed: false,
+          text,
+          createdAt: new Date(),
+        },
+      ]);
     },
   });
 
-  const clearCompleted = trpc.useMutation('todo.clearCompleted', {
+  const clearCompleted = trpc.todo.clearCompleted.useMutation({
     async onMutate() {
-      await utils.cancelQuery(['todo.all']);
+      await utils.todo.all.cancel();
       const tasks = allTasks.data ?? [];
-      utils.setQueryData(
-        ['todo.all'],
+      utils.todo.all.setData(
+        undefined,
         tasks.filter((t) => !t.completed),
       );
     },
@@ -212,7 +212,7 @@ export default function TodosPage({
     // doing this here rather than in `onSettled()`
     // to avoid race conditions if you're clicking fast
     if (number === 0) {
-      utils.invalidateQueries('todo.all');
+      void utils.todo.all.invalidate();
     }
   }, [number, utils]);
   return (
@@ -275,29 +275,29 @@ export default function TodosPage({
           {/* Remove this if you don't implement routing */}
           <ul className="filters">
             <li>
-              <Link href="/all">
-                <a
-                  className={clsx(
-                    !['active', 'completed'].includes(filter as string) &&
-                      'selected',
-                  )}
-                >
-                  All
-                </a>
+              <Link
+                href="/all"
+                className={clsx(
+                  !['active', 'completed'].includes(filter) && 'selected',
+                )}
+              >
+                All
               </Link>
             </li>
             <li>
-              <Link href="/active">
-                <a className={clsx(filter === 'active' && 'selected')}>
-                  Active
-                </a>
+              <Link
+                href="/active"
+                className={clsx(filter === 'active' && 'selected')}
+              >
+                Active
               </Link>
             </li>
             <li>
-              <Link href="/completed">
-                <a className={clsx(filter === 'completed' && 'selected')}>
-                  Completed
-                </a>
+              <Link
+                href="/completed"
+                className={clsx(filter === 'completed' && 'selected')}
+              >
+                Completed
               </Link>
             </li>
           </ul>
@@ -369,15 +369,15 @@ export const getStaticPaths: GetStaticPaths = async () => {
 export const getStaticProps = async (
   context: GetStaticPropsContext<{ filter: string }>,
 ) => {
-  const ssg = createSSGHelpers({
+  const ssg = createProxySSGHelpers({
     router: appRouter,
-    transformer,
+    transformer: superjson,
     ctx: await createContext(),
   });
 
-  await ssg.fetchQuery('todo.all');
+  await ssg.todo.all.fetch();
 
-  // console.log('state', ssr.dehydrate());
+  // console.log('state', ssg.dehydrate());
   return {
     props: {
       trpcState: ssg.dehydrate(),

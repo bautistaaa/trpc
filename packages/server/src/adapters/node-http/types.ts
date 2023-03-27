@@ -1,23 +1,23 @@
-import http from 'http';
-import { inferRouterContext } from '../..';
+import { IncomingMessage, ServerResponse } from 'http';
+import { AnyRouter, inferRouterContext } from '../../core';
 import { HTTPBaseHandlerOptions } from '../../http/internals/types';
-import { AnyRouter } from '../../router';
+import { MaybePromise } from '../../types';
 
 interface ParsedQs {
   [key: string]: undefined | string | string[] | ParsedQs | ParsedQs[];
 }
 
-export type NodeHTTPRequest = http.IncomingMessage & {
+export type NodeHTTPRequest = IncomingMessage & {
   query?: ParsedQs;
   body?: unknown;
 };
-export type NodeHTTPResponse = http.ServerResponse;
+export type NodeHTTPResponse = ServerResponse;
 
 export type NodeHTTPCreateContextOption<
   TRouter extends AnyRouter,
   TRequest,
   TResponse,
-> = unknown extends inferRouterContext<TRouter>
+> = object extends inferRouterContext<TRouter>
   ? {
       /**
        * @link https://trpc.io/docs/context
@@ -31,12 +31,38 @@ export type NodeHTTPCreateContextOption<
       createContext: NodeHTTPCreateContextFn<TRouter, TRequest, TResponse>;
     };
 
+/**
+ * @internal
+ */
+interface ConnectMiddleware<
+  TRequest extends NodeHTTPRequest = NodeHTTPRequest,
+  TResponse extends NodeHTTPResponse = NodeHTTPResponse,
+> {
+  (req: TRequest, res: TResponse, next: (err?: any) => any): void;
+}
+
 export type NodeHTTPHandlerOptions<
   TRouter extends AnyRouter,
   TRequest extends NodeHTTPRequest,
   TResponse extends NodeHTTPResponse,
 > = HTTPBaseHandlerOptions<TRouter, TRequest> & {
-  teardown?: () => Promise<void>;
+  /**
+   * By default, http `OPTIONS` requests are not handled, and CORS headers are not returned.
+   *
+   * This can be used to handle them manually or via the `cors` npm package: https://www.npmjs.com/package/cors
+   *
+   * ```ts
+   * import cors from 'cors'
+   *
+   * nodeHTTPRequestHandler({
+   *   cors: cors()
+   * })
+   * ```
+   *
+   * You can also use it for other needs which a connect/node.js compatible middleware can solve,
+   *  though you might wish to consider an alternative solution like the Express adapter if your needs are complex.
+   */
+  middleware?: ConnectMiddleware;
   maxBodySize?: number;
 } & NodeHTTPCreateContextOption<TRouter, TRequest, TResponse>;
 
@@ -50,4 +76,4 @@ export type NodeHTTPCreateContextFn<
   TResponse,
 > = (
   opts: NodeHTTPCreateContextFnOptions<TRequest, TResponse>,
-) => inferRouterContext<TRouter> | Promise<inferRouterContext<TRouter>>;
+) => MaybePromise<inferRouterContext<TRouter>>;

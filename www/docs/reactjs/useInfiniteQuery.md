@@ -2,32 +2,33 @@
 id: useInfiniteQuery
 title: useInfiniteQuery
 sidebar_label: useInfiniteQuery()
-slug: /useInfiniteQuery
+slug: /reactjs/useinfinitequery
 ---
 
 :::info
 
-- Your procedure needs to accept a `cursor` input of `any` type
+- Your procedure needs to accept a `cursor` input of any type (`string`, `number`, etc) to expose this hook.
 - For more details on infinite queries read the [react-query docs](https://react-query.tanstack.com/reference/useInfiniteQuery)
 - In this example we're using Prisma - see their docs on [cursor-based pagination](https://www.prisma.io/docs/concepts/components/prisma-client/pagination#cursor-based-pagination)
 
 :::
 
-
-
 ## Example Procedure
 
 ```tsx title='server/routers/_app.ts'
-import * as trpc from '@trpc/server';
+import { initTRPC } from '@trpc/server'
 import { Context } from './[trpc]';
 
-export const appRouter = trpc.router<Context>()
-  .query('infinitePosts', {
-    input: z.object({
+export const t = initTRPC.create()
+
+export const appRouter = t.router({
+  infinitePosts: t
+    .procedure
+    .input(z.object({
       limit: z.number().min(1).max(100).nullish(),
       cursor: z.number().nullish(), // <-- "cursor" needs to exist, but can be any type
-    }),
-    async resolve({ input }) {
+    }))
+    .query(({ input }) => {
       const limit = input.limit ?? 50;
       const { cursor } = input;
       const items = await prisma.post.findMany({
@@ -42,7 +43,7 @@ export const appRouter = trpc.router<Context>()
           myCursor: 'asc',
         },
       })
-      let nextCursor: typeof cursor | null = null;
+      let nextCursor: typeof cursor | undefined = undefined;
       if (items.length > limit) {
         const nextItem = items.pop()
         nextCursor = nextItem!.myCursor;
@@ -53,8 +54,8 @@ export const appRouter = trpc.router<Context>()
         nextCursor,
       };
     })
+})
 ```
-
 
 ## Example React Component
 
@@ -62,27 +63,24 @@ export const appRouter = trpc.router<Context>()
 import { trpc } from '../utils/trpc';
 
 export function MyComponent() {
-  const myQuery = trpc.useInfiniteQuery(
-    [
-      'infinitePosts',
-      {
-        limit: 10,
-      },
-    ],
+  const myQuery = trpc.infinitePosts.useInfiniteQuery(
+    {
+      limit: 10,
+    },
     {
       getNextPageParam: (lastPage) => lastPage.nextCursor,
+      // initialCursor: 1, // <-- optional you can pass an initialCursor
     },
   );
   // [...]
 }
-
 ```
 
 ## Helpers
 
-### `getInfiniteQueryData()`
+### `getInfiniteData()`
 
-This helper gets the currently cached data from an exisisting infinite query
+This helper gets the currently cached data from an existing infinite query
 
 ```tsx title='components/MyComponent.tsx'
 import { trpc } from '../utils/trpc';
@@ -90,19 +88,19 @@ import { trpc } from '../utils/trpc';
 export function MyComponent() {
   const utils = trpc.useContext();
 
-  const myMutation = trpc.useMutation('infinitePosts.add', {
-    onMutate({ post }) {
-      await utils.cancelQuery(['infinitePosts']);
-      const allPosts = utils.getInfiniteQueryData(['infinitePosts', { limit: 10 }]);
+  const myMutation = trpc.infinitePosts.add.useMutation({
+    async onMutate({ post }) {
+      await utils.infinitePosts.cancel();
+      const allPosts = utils.infinitePosts.getInfiniteData({ limit: 10 });
       // [...]
-    }
-  })
+    },
+  });
 }
 ```
 
-### `setInfiniteQueryData()`
+### `setInfiniteData()`
 
-This helper allows you to update a queries cached data
+This helper allows you to update a query's cached data
 
 ```tsx title='components/MyComponent.tsx'
 import { trpc } from '../utils/trpc';
@@ -110,31 +108,29 @@ import { trpc } from '../utils/trpc';
 export function MyComponent() {
   const utils = trpc.useContext();
 
-  const myMutation = trpc.useMutation('infinitePosts.delete', {
-    onMutate({ post }) {
-      await utils.cancelQuery(['infinitePosts']);
+  const myMutation = trpc.infinitePosts.delete.useMutation({
+    async onMutate({ post }) {
+      await utils.infinitePosts.cancel();
 
-      utils.setInfiniteQueryData(['infinitePosts', { limit: 10 }], (data) => {
+      utils.infinitePosts.setInfiniteData({ limit: 10 }, (data) => {
         if (!data) {
           return {
             pages: [],
-            pageParams: []
-          }
+            pageParams: [],
+          };
         }
 
         return {
           ...data,
-          pages: data.pages.map((page) => {
+          pages: data.pages.map((page) => ({
             ...page,
-            items: page.items.filter((item) => item.status === 'published')
-          })
-        }
+            items: page.items.filter((item) => item.status === 'published'),
+          })),
+        };
       });
-    }
+    },
   });
 
   // [...]
 }
-
-
 ```

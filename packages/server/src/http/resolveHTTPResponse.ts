@@ -1,17 +1,17 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-import { Maybe } from '@trpc/server';
-import { TRPCError } from '../TRPCError';
-import { callProcedure } from '../internals/callProcedure';
-import { getErrorFromUnknown } from '../internals/errors';
-import { transformTRPCResponse } from '../internals/transformTRPCResponse';
 import {
   AnyRouter,
   ProcedureType,
+  callProcedure,
   inferRouterContext,
   inferRouterError,
-} from '../router';
-import { TRPCErrorResponse, TRPCResponse, TRPCResultResponse } from '../rpc';
-import { getHTTPStatusCode } from './internals/getHTTPStatusCode';
+} from '../core';
+import { TRPCError, getTRPCErrorFromUnknown } from '../error/TRPCError';
+import { getCauseFromUnknown } from '../error/utils';
+import { transformTRPCResponse } from '../internals/transformTRPCResponse';
+import { TRPCResponse } from '../rpc';
+import { Maybe } from '../types';
+import { getHTTPStatusCode } from './getHTTPStatusCode';
 import {
   HTTPBaseHandlerOptions,
   HTTPHeaders,
@@ -25,7 +25,6 @@ const HTTP_METHOD_PROCEDURE_TYPE_MAP: Record<
 > = {
   GET: 'query',
   POST: 'mutation',
-  PATCH: 'subscription',
 };
 function getRawProcedureInputOrThrow(req: HTTPRequest) {
   try {
@@ -36,11 +35,15 @@ function getRawProcedureInputOrThrow(req: HTTPRequest) {
       const raw = req.query.get('input');
       return JSON.parse(raw!);
     }
-    return typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-  } catch (cause) {
+    if (typeof req.body === 'string') {
+      // A mutation with no inputs will have req.body === ''
+      return req.body.length === 0 ? undefined : JSON.parse(req.body);
+    }
+    return req.body;
+  } catch (err) {
     throw new TRPCError({
       code: 'PARSE_ERROR',
-      cause,
+      cause: getCauseFromUnknown(err),
     });
   }
 }
@@ -121,7 +124,14 @@ export async function resolveHTTPResponse<
     if (isBatchCall && !batchingEnabled) {
       throw new Error(`Batching is not enabled on the server`);
     }
-    if (type === 'unknown' || type === 'subscription') {
+    /* istanbul ignore if -- @preserve */
+    if (type === 'subscription') {
+      throw new TRPCError({
+        message: 'Subscriptions should use wsLink',
+        code: 'METHOD_NOT_SUPPORTED',
+      });
+    }
+    if (type === 'unknown') {
       throw new TRPCError({
         message: `Unexpected request method ${req.method}`,
         code: 'METHOD_NOT_SUPPORTED',
@@ -134,7 +144,7 @@ export async function resolveHTTPResponse<
 
     const deserializeInputValue = (rawValue: unknown) => {
       return typeof rawValue !== 'undefined'
-        ? router._def.transformer.input.deserialize(rawValue)
+        ? router._def._config.transformer.input.deserialize(rawValue)
         : rawValue;
     };
     const getInputs = (): Record<number, unknown> => {
@@ -144,6 +154,7 @@ export async function resolveHTTPResponse<
         };
       }
 
+      /* istanbul ignore if -- @preserve */
       if (
         rawInput == null ||
         typeof rawInput !== 'object' ||
@@ -157,7 +168,7 @@ export async function resolveHTTPResponse<
       const input: Record<number, unknown> = {};
       for (const key in rawInput) {
         const k = key as any as number;
-        const rawValue = (rawInput as any)[k];
+        const rawValue = rawInput[k];
 
         const value = deserializeInputValue(rawValue);
 
@@ -170,12 +181,13 @@ export async function resolveHTTPResponse<
     const rawResults = await Promise.all(
       paths.map(async (path, index) => {
         const input = inputs[index];
+
         try {
           const output = await callProcedure({
-            ctx,
-            router,
+            procedures: router._def.procedures,
             path,
-            input,
+            rawInput: input,
+            ctx,
             type,
           });
           return {
@@ -184,7 +196,7 @@ export async function resolveHTTPResponse<
             data: output,
           };
         } catch (cause) {
-          const error = getErrorFromUnknown(cause);
+          const error = getTRPCErrorFromUnknown(cause);
 
           onError?.({ error, path, input, ctx, type: type, req });
           return {
@@ -196,12 +208,11 @@ export async function resolveHTTPResponse<
       }),
     );
     const errors = rawResults.flatMap((obj) => (obj.error ? [obj.error] : []));
-    const resultEnvelopes = rawResults.map((obj) => {
+    const resultEnvelopes = rawResults.map((obj): TRouterResponse => {
       const { path, input } = obj;
 
       if (obj.error) {
-        const json: TRPCErrorResponse<TRouterError> = {
-          id: null,
+        return {
           error: router.getErrorShape({
             error: obj.error,
             type,
@@ -210,20 +221,16 @@ export async function resolveHTTPResponse<
             ctx,
           }),
         };
-        return json;
       } else {
-        const json: TRPCResultResponse<unknown> = {
-          id: null,
+        return {
           result: {
-            type: 'data',
             data: obj.data,
           },
         };
-        return json;
       }
     });
 
-    const result = isBatchCall ? resultEnvelopes : resultEnvelopes[0];
+    const result = isBatchCall ? resultEnvelopes : resultEnvelopes[0]!;
     return endResponse(result, errors);
   } catch (cause) {
     // we get here if
@@ -231,18 +238,9 @@ export async function resolveHTTPResponse<
     // - `createContext()` throws
     // - post body is too large
     // - input deserialization fails
-    const error = getErrorFromUnknown(cause);
+    // - `errorFormatter` return value is malformed
+    const error = getTRPCErrorFromUnknown(cause);
 
-    const json: TRPCErrorResponse<TRouterError> = {
-      id: null,
-      error: router.getErrorShape({
-        error,
-        type,
-        path: undefined,
-        input: undefined,
-        ctx,
-      }),
-    };
     onError?.({
       error,
       path: undefined,
@@ -251,6 +249,17 @@ export async function resolveHTTPResponse<
       type: type,
       req,
     });
-    return endResponse(json, [error]);
+    return endResponse(
+      {
+        error: router.getErrorShape({
+          error,
+          type,
+          path: undefined,
+          input: undefined,
+          ctx,
+        }),
+      },
+      [error],
+    );
   }
 }

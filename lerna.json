@@ -1,12 +1,10 @@
 {
-  "version": "9.25.3",
+  "version": "10.18.0",
   "registry": "https://registry.npmjs.org/",
   "publishConfig": {
     "access": "public"
   },
-  "npmClient": "yarn",
+  "npmClient": "pnpm",
   "useWorkspaces": true,
-  "packages": [
-    "packages/*"
-  ]
+  "packages": ["packages/*", "www", "www/og-image"]
 }

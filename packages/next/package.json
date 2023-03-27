@@ -1,57 +1,75 @@
 {
   "name": "@trpc/next",
-  "version": "9.25.3",
+  "version": "10.18.0",
   "description": "tRPC Next lib",
   "author": "KATT",
   "license": "MIT",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "typings": "dist/index.d.ts",
   "homepage": "https://trpc.io",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/trpc/trpc.git",
     "directory": "packages/next"
   },
-  "preconstruct": {
-    "entrypoints": [
-      "index.ts"
-    ]
-  },
-  "scripts": {},
-  "main": "dist/trpc-next.cjs.js",
-  "module": "dist/trpc-next.esm.js",
-  "typings": "dist/trpc-next.cjs.d.ts",
-  "files": [
-    "README.md",
-    "dist",
-    "src"
-  ],
   "eslintConfig": {
     "rules": {
-      "react-hooks/exhaustive-deps": "error"
+      "react-hooks/exhaustive-deps": "error",
+      "no-restricted-imports": [
+        "error",
+        "@trpc/next"
+      ]
     }
   },
+  "scripts": {
+    "build": "rollup --config rollup.config.ts --configPlugin rollup-plugin-swc3",
+    "dev": "pnpm build --watch",
+    "codegen:entrypoints": "tsx entrypoints.script.ts",
+    "lint": "eslint --ext \".js,.ts,.tsx\" --ignore-path ../../.gitignore --report-unused-disable-directives src"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "package.json"
+  ],
   "peerDependencies": {
-    "@trpc/client": "^9.12.0",
-    "@trpc/react": "^9.12.0",
-    "@trpc/server": "^9.12.0",
+    "@tanstack/react-query": "^4.18.0",
+    "@trpc/client": "10.18.0",
+    "@trpc/react-query": "10.18.0",
+    "@trpc/server": "10.18.0",
     "next": "*",
     "react": ">=16.8.0",
-    "react-dom": ">=16.8.0",
-    "react-query": "^3.37.0 || ^4.0.0-alpha.4"
+    "react-dom": ">=16.8.0"
   },
   "dependencies": {
-    "@babel/runtime": "^7.9.0",
     "react-ssr-prepass": "^1.5.0"
   },
   "devDependencies": {
-    "@trpc/client": "^9.25.3",
-    "@trpc/react": "^9.25.3",
-    "@trpc/server": "^9.25.3",
+    "@tanstack/react-query": "^4.18.0",
+    "@trpc/client": "^10.18.0",
+    "@trpc/react-query": "^10.18.0",
+    "@trpc/server": "^10.18.0",
     "@types/express": "^4.17.12",
+    "@types/node": "^18.7.20",
+    "@types/react": "^18.0.9",
+    "@types/react-dom": "^18.0.5",
+    "eslint": "^8.30.0",
     "express": "^4.17.1",
-    "next": "^12.1.6",
-    "react": "^18.1.0",
-    "react-dom": "^18.1.0",
-    "react-query": "^3.37.0",
+    "next": "^13.2.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "rollup": "^2.79.1",
+    "tsx": "^3.12.3",
     "zod": "^3.0.0"
   },
   "publishConfig": {

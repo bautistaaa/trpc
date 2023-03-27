@@ -1,11 +1,7 @@
 # https://help.github.com/en/github/creating-cloning-and-archiving-repositories/about-code-owners
 
 
-* @KATT
+* @KATT @trpc-bot @sachinraja @bautistaaa @juliusmarminge
 
-
-**/package.json @trpc-bot @KATT
-**/yarn.lock @trpc-bot @KATT
-
-**/*fastify* @skarab42 @KATT
-**/*lambda* @Lilja @KATT
+www/**/* @trpc/trpc-website-docs
+# **/*lambda* @Lilja @KATT
